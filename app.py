@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import pickle
+import matplotlib.pyplot as plt
 
 # Load the trained model, scaler, and expected column order
 with open('gb_model.pkl', 'rb') as f:
@@ -11,9 +12,15 @@ with open('scaler.pkl', 'rb') as f:
 
 with open('feature_columns.pkl', 'rb') as f:
     feature_columns = pickle.load(f)
+
 # Load test data to build a comparison distribution
 X_test = pd.read_csv('X_test.csv')
 all_probabilities = model.predict_proba(X_test)[:, 1]
+
+numeric_cols = ['CreditScore', 'Age', 'Tenure', 'Balance', 'NumOfProducts',
+                 'EstimatedSalary', 'BalanceSalaryRatio', 'EngagementProductInteraction',
+                 'AgeTenureInteraction']
+
 st.title("Bank Customer Churn Risk Calculator")
 st.write("Enter customer details to predict churn risk.")
 
@@ -31,7 +38,6 @@ geography = st.selectbox("Geography", ["France", "Germany", "Spain"])
 gender = st.selectbox("Gender", ["Male", "Female"])
 
 if st.button("Calculate Churn Risk"):
-
     # Build the engineered features, same as in our notebooks
     balance_salary_ratio = balance / salary
     high_product_density = 1 if num_products >= 3 else 0
@@ -39,7 +45,6 @@ if st.button("Calculate Churn Risk"):
     engagement_product_interaction = is_active_num * num_products
     age_tenure_interaction = age * tenure
 
-    # Build a dictionary matching our training columns exactly
     input_dict = {
         'CreditScore': credit_score,
         'Age': age,
@@ -58,19 +63,26 @@ if st.button("Calculate Churn Risk"):
         'Gender_Male': 1 if gender == "Male" else 0
     }
 
-    # Convert to a DataFrame with the exact column order the model expects
     input_df = pd.DataFrame([input_dict])[feature_columns]
-
-    # Scale the same numeric columns we scaled during training
-    numeric_cols = ['CreditScore', 'Age', 'Tenure', 'Balance', 'NumOfProducts',
-                     'EstimatedSalary', 'BalanceSalaryRatio', 'EngagementProductInteraction',
-                     'AgeTenureInteraction']
     input_df[numeric_cols] = scaler.transform(input_df[numeric_cols])
 
-    # Predict
     probability = model.predict_proba(input_df)[0][1]
-    st.session_state['last_probability'] = probability
     prediction = model.predict(input_df)[0]
+
+    # Save everything we need later into session_state,
+    # so it survives future reruns caused by the what-if dropdowns
+    st.session_state['calculated'] = True
+    st.session_state['probability'] = probability
+    st.session_state['prediction'] = prediction
+    st.session_state['input_dict'] = input_dict
+
+# Everything below now checks session_state instead of the button directly,
+# so it keeps showing even after the button's one-time click has passed
+if st.session_state.get('calculated'):
+
+    probability = st.session_state['probability']
+    prediction = st.session_state['prediction']
+    input_dict = st.session_state['input_dict']
 
     st.header("Result")
     st.write(f"Churn Probability: **{probability:.1%}**")
@@ -78,7 +90,9 @@ if st.button("Calculate Churn Risk"):
     if prediction == 1:
         st.error("High Risk: This customer is likely to churn.")
     else:
-        st.header("What-If Scenario Simulator")
+        st.success("Low Risk: This customer is likely to stay.")
+
+    st.header("What-If Scenario Simulator")
     st.write("Adjust engagement or products below to see how risk would change:")
 
     whatif_active = st.selectbox("What if Active Member?", ["Yes", "No"], key="whatif_active")
@@ -99,22 +113,18 @@ if st.button("Calculate Churn Risk"):
     whatif_probability = model.predict_proba(whatif_df)[0][1]
 
     st.write(f"Original Churn Probability: **{probability:.1%}**")
-    st.write(f"What-If Churn Probability: **{whatif_probability:.1%}**")             
+    st.write(f"What-If Churn Probability: **{whatif_probability:.1%}**")
     st.write(f"Change: **{(whatif_probability - probability)*100:+.1f} percentage points**")
-    st.success("Low Risk: This customer is likely to stay.")
+
     st.header("What Drives Churn? (Feature Importance)")
+    importances = pd.Series(model.feature_importances_, index=feature_columns).sort_values(ascending=False)
+    st.bar_chart(importances)
 
-importances = pd.Series(model.feature_importances_, index=feature_columns).sort_values(ascending=False)
-st.bar_chart(importances)
-st.header("How Does This Compare to Other Customers?")
-
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots()
-ax.hist(all_probabilities, bins=30, color='skyblue', edgecolor='black')
-if st.session_state.get('last_probability') is not None:
-    ax.axvline(st.session_state['last_probability'], color='red', linestyle='--', linewidth=2, label='This Customer')
+    st.header("How Does This Compare to Other Customers?")
+    fig, ax = plt.subplots()
+    ax.hist(all_probabilities, bins=30, color='skyblue', edgecolor='black')
+    ax.axvline(probability, color='red', linestyle='--', linewidth=2, label='This Customer')
     ax.legend()
-ax.set_xlabel('Churn Probability')
-ax.set_ylabel('Number of Customers')
-st.pyplot(fig)
+    ax.set_xlabel('Churn Probability')
+    ax.set_ylabel('Number of Customers')
+    st.pyplot(fig)
